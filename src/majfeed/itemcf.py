@@ -1,11 +1,11 @@
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict
 from uuid import UUID
 
 import numpy as np
 from bson import ObjectId
-from pymongo import MongoClient
+from pymongo import MongoClient, ReplaceOne
 from scipy.sparse import coo_array
 
 
@@ -188,3 +188,40 @@ def build_itemcf(
             for pos in positions
         ]
     return topks
+
+
+def save_neighbors(
+    uri: str,
+    database_name: str,
+    topks: dict[UUID, list[Neighbor]],
+    model_version: str,
+) -> int:
+    """按 C# ChartNeighborList 的结构更新 ChartNeighbors，返回写入谱面数。"""
+    generated_at = datetime.now(timezone.utc)
+    operations = []
+    written = 0
+    with MongoClient(uri, uuidRepresentation="standard", tz_aware=True) as client:
+        collection = client[database_name]["ChartNeighbors"]
+        for chart_id, neighbors in topks.items():
+            # _id 复用原谱面 UUID；字段大小写和 UUID Standard 格式与 C# 模型一致。
+            document = {
+                "_id": chart_id,
+                "ModelVersion": model_version,
+                "GeneratedAt": generated_at,
+                "Neighbors": [
+                    {"ChartId": neighbor["guid"], "Score": float(neighbor["score"])}
+                    for neighbor in sorted(neighbors, key=lambda item: item["score"], reverse=True)
+                ],
+            }
+            # 同一谱面直接替换当前近邻列表，不存在时插入；本轮所有文档共用生成时间。
+            operations.append(ReplaceOne({"_id": chart_id}, document, upsert=True))
+            if len(operations) == 500:
+                collection.bulk_write(operations, ordered=False)
+                written += len(operations)
+                operations.clear()
+
+        # 写入最后不足一批的结果，空结果不会发出写入操作。
+        if operations:
+            collection.bulk_write(operations, ordered=False)
+            written += len(operations)
+    return written

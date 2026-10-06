@@ -18,6 +18,13 @@ IUF 使用每行非零项数量（不同谱面数）；分母使用未乘 IUF �
 全为 1.0 且没有重复 pair 时，与原二值 IUF 公式一致。返回值为
 `dict[UUID, list[{"guid": UUID, "score": float}]]`，函数不访问数据库或打印结果。
 
+`save_neighbors(uri, database_name, topks, model_version)` 按谱面 UUID 批量 upsert
+到 `ChartNeighbors`，返回写入的谱面数。BSON 字段与后端 `ChartNeighborList` 对齐：
+`_id`、`ModelVersion`、`GeneratedAt`、`Neighbors[{ChartId, Score}]`。
+UUID 使用 Standard 编码，生成时间统一为 UTC，近邻按分数降序保存。
+每批写入 500 张谱面；本轮未包含的已有文档保持原样。写入不是跨文档原子发布，
+若中途失败会直接抛错，已经完成的批次可能已写入。
+
 在项目根目录调用：
 
 ```bash
@@ -35,6 +42,13 @@ PYTHON
 
 ```bash
 PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
+```
+
+MongoDB 回写集成检查（自动创建并清理独立测试库）：
+
+```bash
+MONGO_TEST_URI='mongodb://127.0.0.1:27018' PYTHONPATH=src \
+  uv run --locked python tests/check_mongo_write.py -v
 ```
 
 ## 时间切分召回评估
