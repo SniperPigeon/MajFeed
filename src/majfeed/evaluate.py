@@ -14,7 +14,7 @@ def evaluate_recall(
     topks: dict[UUID, list[Neighbor]],
     k: int = 20,
 ) -> dict:
-    """Macro Recall@K for known users discovering training-catalog charts."""
+    """评估老用户发现训练期已出现谱面的用户平均 Recall@K。"""
     train_by_user = defaultdict(set)
     validation_by_user = defaultdict(set)
     for pair in train_pairs:
@@ -26,11 +26,13 @@ def evaluate_recall(
     recalls = []
     hits = target_pairs = repeat_pairs = cold_users = cold_user_pairs = cold_item_pairs = 0
     for user, validation_items in validation_by_user.items():
+        # 没有训练历史的用户属于冷启动，单独计数，不加入本轮个性化指标。
         if user not in train_by_user:
             cold_users += 1
             cold_user_pairs += len(validation_items)
             continue
 
+        # 目标是用户没玩过、但训练期其他用户玩过的谱面；复玩和新谱单独计数。
         history = train_by_user[user]
         repeat_pairs += len(validation_items & history)
         novel_items = validation_items - history
@@ -39,6 +41,7 @@ def evaluate_recall(
         if not targets:
             continue
 
+        # 汇总历史谱面带来的邻居分数，同一候选被多条历史召回时分数累加。
         scores = defaultdict(float)
         for chart in sorted(history):
             for neighbor in topks[chart]:
@@ -46,6 +49,7 @@ def evaluate_recall(
                     scores[neighbor["guid"]] += neighbor["score"]
         ranked = sorted(scores, key=lambda chart: (-scores[chart], chart.int))[:k]
         user_hits = len(set(ranked) & targets)
+        # 先算每个用户的召回率，再求平均；不要用总命中数除以总目标数代替。
         recalls.append(user_hits / len(targets))
         hits += user_hits
         target_pairs += len(targets)
@@ -76,11 +80,13 @@ def run_time_split(
     neighbor_k: int = 100,
     k: int = 20,
 ) -> dict:
-    """Train before split; validate on [split, end), using actual play times."""
+    """split 前训练，[split, end) 验证，使用实际游玩时间划分数据。"""
+    # Scores 记录最后更新时间，回测应读 PlayHistory；当前点赞也没有历史时间戳。
     train_pairs = load_pairs(uri, database_name, collection="PlayHistory", end=split)
     validation_pairs = load_pairs(
         uri, database_name, collection="PlayHistory", start=split, end=end
     )
+    # neighbor_k 是每张谱面保留的邻居数，k 是最终给每个用户推荐的数量。
     topks = build_itemcf(train_pairs, k=neighbor_k)
     return {
         "split": split.isoformat(),
