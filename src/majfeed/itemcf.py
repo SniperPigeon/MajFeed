@@ -89,7 +89,6 @@ cocurrence_matrix = weighted_matrix.T @ weighted_matrix  # haven't clear diagona
 similarity_matrix = cocurrence_matrix.multiply(item_count_vector).multiply(item_count_vector.reshape(-1, 1))  # normalize the cocurrence matrix to get similarity matrix
 
 similarity_matrix.setdiag(0)  # set diagonal to 0
-similarity_matrix = similarity_matrix / np.max(similarity_matrix) # normalization
 similarity_matrix = similarity_matrix.tocsr()
 similarity_matrix.eliminate_zeros()
 
