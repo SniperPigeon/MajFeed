@@ -25,6 +25,25 @@ UUID 使用 Standard 编码，生成时间统一为 UTC，近邻按分数降序�
 每批写入 500 张谱面；本轮未包含的已有文档保持原样。写入不是跨文档原子发布，
 若中途失败会直接抛错，已经完成的批次可能已写入。
 
+## 主入口
+
+`src/main.py` 按配置完成读取游玩、读取点赞、计算 Top-K、回写数据库的完整流程。
+在项目根目录准备 `.env` 后运行，无需传业务 CLI 参数：
+
+```bash
+cp .env.example .env
+uv run --locked --env-file .env python src/main.py
+```
+
+配置中的 `MONGO_URI`、`MONGO_DATABASE` 和 `MODEL_VERSION` 必填，`TOP_K` 默认为 100。
+执行后会更新配置数据库内的 `ChartNeighbors`，完成后输出一条 JSON 统计并退出。
+`.env` 已被 Git 忽略；Docker 可通过 `env_file` 注入同名变量后直接运行该入口。
+
+其他 Python 脚本可在 `src` 位于模块搜索路径时导入
+`from main import run`，调用 `run(uri, database_name, model_version, k=100)`。
+
+## 单独调用计算函数
+
 在项目根目录调用：
 
 ```bash

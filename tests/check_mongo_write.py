@@ -1,8 +1,14 @@
+import json
+import math
 import os
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
+from bson import ObjectId
 from bson.binary import Binary, UUID_SUBTYPE, UuidRepresentation
 from bson.codec_options import CodecOptions
 from pymongo import MongoClient
@@ -65,6 +71,61 @@ class MongoWriteChecks(unittest.TestCase):
     def test_empty_result_does_not_write_documents(self):
         self.assertEqual(save_neighbors(self.uri, self.database_name, {}, "empty"), 0)
         self.assertEqual(self.db.ChartNeighbors.count_documents({}), 0)
+
+    def test_main_reads_configuration_and_writes_weighted_neighbors(self):
+        a, b, c = [UUID(int=i) for i in range(1, 4)]
+        u1, u2 = [ObjectId(f"{i:024x}") for i in range(1, 3)]
+        self.db.MaiCharts.insert_many([
+            {"_id": a, "Hash": "a"},
+            {"_id": b, "Hash": "b"},
+            {"_id": c, "Hash": "c"},
+        ])
+        self.db.NetUsers.insert_many([{"_id": u1}, {"_id": u2}])
+        self.db.Scores.insert_many([
+            {"PlayerId": u1, "Hash": "a"},
+            {"PlayerId": u1, "Hash": "b"},
+            {"PlayerId": u2, "Hash": "a"},
+            {"PlayerId": u2, "Hash": "c"},
+        ])
+        self.db.ChartInteracts.insert_many([
+            {"ChartHash": "a", "Likes": [u1]},
+            {"ChartHash": "b", "Likes": [u2]},
+        ])
+
+        root = Path(__file__).resolve().parents[1]
+        process = subprocess.run(
+            [sys.executable, str(root / "src/main.py")],
+            cwd=root,
+            env={
+                **os.environ,
+                "MONGO_URI": self.uri,
+                "MONGO_DATABASE": self.database_name,
+                "MODEL_VERSION": "configured-v1",
+                "TOP_K": "1",
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        self.assertEqual(json.loads(process.stdout), {
+            "model_version": "configured-v1",
+            "k": 1,
+            "play_pairs": 4,
+            "like_pairs": 2,
+            "written_charts": 3,
+        })
+
+        # A 的权重为 [2.5, 1]，B 为 [1, 1.5]，两位用户分别接触 2、3 张谱面。
+        expected_ab = (2.5 / math.log(3) + 1.5 / math.log(4)) / math.sqrt(7.25 * 3.25)
+        docs = {doc["_id"]: doc for doc in self.db.ChartNeighbors.find()}
+        self.assertEqual(set(docs), {a, b, c})
+        self.assertEqual(docs[a]["ModelVersion"], "configured-v1")
+        self.assertEqual(docs[a]["Neighbors"][0]["ChartId"], b)
+        self.assertAlmostEqual(docs[a]["Neighbors"][0]["Score"], expected_ab, places=6)
+        self.assertEqual(docs[b]["Neighbors"][0]["ChartId"], a)
+        self.assertEqual(docs[c]["Neighbors"][0]["ChartId"], b)
+        self.assertTrue(all(len(doc["Neighbors"]) == 1 for doc in docs.values()))
 
 
 if __name__ == "__main__":
