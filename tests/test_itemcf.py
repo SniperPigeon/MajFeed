@@ -13,7 +13,7 @@ class ItemCFTests(unittest.TestCase):
         # User activity: 3, 2, 1, 1. Item support: 3, 2, 1, 1.
         histories = [(self.a, self.b, self.c), (self.a, self.b), (self.a,), (self.d,)]
         self.pairs = [
-            {"userId": ObjectId(f"{u:024x}"), "chartId": chart}
+            {"userId": ObjectId(f"{u:024x}"), "chartId": chart, "weight": 1.0}
             for u, history in enumerate(histories, start=1)
             for chart in history
         ]

@@ -5,8 +5,12 @@
 ## Notes
 
 `load_pairs(uri, database_name)` 默认读取 `Scores`，按 Hash 关联当前
-`MaiCharts`，返回去重后的 `userId/chartId` 对。可用 `collection` 切换集合，
+`MaiCharts`，返回去重后的 `userId/chartId` 对，每条带有 `weight: 1.0`。可用 `collection` 切换集合，
 并通过 `start`、`end` 在去重前筛选 `[start, end)` 时间范围。
+
+`load_like_pairs(uri, database_name)` 展开 `ChartInteracts.Likes`，关联当前谱面
+和现存账号，返回去重后的 `userId/chartId` 对，每条带有 `weight: 1.5`。
+点赞只有当前状态，没有个人操作时间，因此该函数不参与历史时间切分评估。
 
 `build_itemcf(pairs, k=100)` 保留二值交互、IUF、原始谱面用户数归一化和
 Top-K 排序。输入应是去重后的 pair；返回值为

@@ -12,6 +12,7 @@ from scipy.sparse import coo_array
 class InteractionPair(TypedDict):
     userId: ObjectId
     chartId: UUID
+    weight: float
 
 
 class Neighbor(TypedDict):
@@ -27,7 +28,7 @@ def load_pairs(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> list[InteractionPair]:
-    """Load distinct user/chart pairs with a current Hash in [start, end)."""
+    """Load distinct user/chart pairs in [start, end), with play weight 1.0."""
     pipeline = []
     time_filter = {}
     if start is not None:
@@ -60,12 +61,58 @@ def load_pairs(
                 "_id": 0,
                 "userId": "$_id.userId",
                 "chartId": "$_id.chartId",
+                "weight": {"$literal": 1.0},
             }
         },
     ])
 
     with MongoClient(uri, uuidRepresentation="standard", tz_aware=True) as client:
         with client[database_name][collection].aggregate(pipeline) as cursor:
+            return list(cursor)
+
+
+def load_like_pairs(uri: str, database_name: str) -> list[InteractionPair]:
+    """Load current likes for existing charts and users, with weight 1.5."""
+    pipeline = [
+        {
+            "$lookup": {
+                "from": "MaiCharts",
+                "localField": "ChartHash",
+                "foreignField": "Hash",
+                "as": "chart",
+            }
+        },
+        {"$unwind": "$chart"},
+        {"$unwind": "$Likes"},
+        {
+            "$lookup": {
+                "from": "NetUsers",
+                "localField": "Likes",
+                "foreignField": "_id",
+                "as": "user",
+            }
+        },
+        {"$unwind": "$user"},
+        {
+            "$group": {
+                "_id": {
+                    "userId": "$Likes",
+                    "chartId": "$chart._id",
+                }
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "userId": "$_id.userId",
+                "chartId": "$_id.chartId",
+                "weight": {"$literal": 1.5},
+            }
+        },
+    ]
+
+    with MongoClient(uri, uuidRepresentation="standard", tz_aware=True) as client:
+        with client[database_name]["ChartInteracts"].aggregate(pipeline) as cursor:
             return list(cursor)
 
 

@@ -12,7 +12,7 @@ class RecallTests(unittest.TestCase):
 
     def pairs(self, *entries):
         return [
-            {"userId": ObjectId(f"{user:024x}"), "chartId": chart}
+            {"userId": ObjectId(f"{user:024x}"), "chartId": chart, "weight": 1.0}
             for user, chart in entries
         ]
 
