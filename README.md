@@ -12,18 +12,22 @@
 和现存账号，返回去重后的 `userId/chartId` 对，每条带有 `weight: 1.5`。
 点赞只有当前状态，没有个人操作时间，因此该函数不参与历史时间切分评估。
 
-`build_itemcf(pairs, k=100)` 保留二值交互、IUF、原始谱面用户数归一化和
-Top-K 排序。输入应是去重后的 pair；返回值为
+`build_itemcf(pairs, k=100)` 按每条记录的 `weight` 构建交互数组，同一用户—谱面的
+多条记录在转为 CSR 时相加。例如游玩 1.0 加点赞 1.5，最终权重为 2.5。
+IUF 使用每行非零项数量（不同谱面数）；分母使用未乘 IUF 的交互权重列的 L2 范数。
+全为 1.0 且没有重复 pair 时，与原二值 IUF 公式一致。返回值为
 `dict[UUID, list[{"guid": UUID, "score": float}]]`，函数不访问数据库或打印结果。
 
 在项目根目录调用：
 
 ```bash
 PYTHONPATH=src uv run --locked python - <<'PYTHON'
-from majfeed.itemcf import build_itemcf, load_pairs
+from itertools import chain
+from majfeed.itemcf import build_itemcf, load_like_pairs, load_pairs
 
 pairs = load_pairs("mongodb://127.0.0.1:27018", "MajNetDb_local")
-topks = build_itemcf(pairs, k=100)
+like_pairs = load_like_pairs("mongodb://127.0.0.1:27018", "MajNetDb_local")
+topks = build_itemcf(chain(pairs, like_pairs), k=100)
 PYTHON
 ```
 
@@ -38,6 +42,7 @@ PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 评估使用 `PlayHistory.Timestamp`：训练集为 `< split`，验证集为
 `[split, end)`。先筛选时间再对用户—谱面对去重，不使用 `Scores` 的最后更新时间
 代替真实游玩时间。IUF 和相似度只用训练集计算。
+当前点赞没有历史时间戳，不加入该评估；每条去重游玩 pair 的权重仍为 1.0。
 
 ```bash
 PYTHONPATH=src uv run --locked python -m majfeed.evaluate \

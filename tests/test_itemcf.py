@@ -38,6 +38,29 @@ class ItemCFTests(unittest.TestCase):
         self.assertEqual([n["guid"] for n in neighbors[self.a]], [self.b])
         self.assertTrue(all(len(items) <= 1 for items in neighbors.values()))
 
+    def test_like_weight_uses_distinct_activity_and_weighted_column_norms(self):
+        user = ObjectId(f"{1:024x}")
+        pairs = self.pairs + [{"userId": user, "chartId": self.a, "weight": 1.5}]
+        neighbors = build_itemcf(pairs)
+
+        # User 1 still has three charts; A's weights are now [2.5, 1, 1].
+        expected_ab = (2.5 / math.log(4) + 1 / math.log(3)) / math.sqrt(8.25 * 2)
+        expected_ac = (2.5 / math.log(4)) / math.sqrt(8.25)
+        scores = {n["guid"]: n["score"] for n in neighbors[self.a]}
+        self.assertAlmostEqual(scores[self.b], expected_ab, places=6)
+        self.assertAlmostEqual(scores[self.c], expected_ac, places=6)
+
+    def test_repeated_pairs_match_preaggregated_weights(self):
+        user = ObjectId(f"{1:024x}")
+        repeated = self.pairs + [{"userId": user, "chartId": self.a, "weight": 1.5}]
+        aggregated = [
+            {**pair, "weight": 2.5}
+            if pair["userId"] == user and pair["chartId"] == self.a
+            else pair
+            for pair in self.pairs
+        ]
+        self.assertEqual(build_itemcf(repeated), build_itemcf(aggregated))
+
 
 if __name__ == "__main__":
     unittest.main()

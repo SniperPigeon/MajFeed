@@ -119,11 +119,12 @@ def load_like_pairs(uri: str, database_name: str) -> list[InteractionPair]:
 def build_itemcf(
     pairs: Iterable[InteractionPair], k: int = 100
 ) -> dict[UUID, list[Neighbor]]:
-    """Compute the existing IUF ItemCF formula from deduplicated binary pairs."""
+    """Compute weighted IUF ItemCF; repeated user/chart pairs add their weights."""
     user_to_idx = {}
     chart_to_idx = {}
     rows = []
     cols = []
+    vals = []
     for record in pairs:
         user_id = record["userId"]
         chart_id = record["chartId"]
@@ -133,22 +134,25 @@ def build_itemcf(
             chart_to_idx[chart_id] = len(chart_to_idx)
         rows.append(user_to_idx[user_id])
         cols.append(chart_to_idx[chart_id])
+        vals.append(record["weight"])
 
-    vals = np.ones(len(rows), dtype=np.float32)
+    vals = np.asarray(vals, dtype=np.float32)
     play_record_matrix = coo_array(
         (vals, (rows, cols)), shape=(len(user_to_idx), len(chart_to_idx))
     ).tocsr()
     idx_to_chart = {v: key for key, v in chart_to_idx.items()}
 
-    user_counts = play_record_matrix.sum(axis=1).flatten()
-    item_counts = play_record_matrix.sum(axis=0).flatten()
-    item_count_vector = 1 / np.sqrt(item_counts)
+    user_counts = play_record_matrix.count_nonzero(axis=1).astype(np.float32)
+    item_square_sums = (
+        play_record_matrix.multiply(play_record_matrix).sum(axis=0).flatten()
+    )
+    item_norm_vector = 1 / np.sqrt(item_square_sums)
     user_iuf = (1.0 / np.log1p(user_counts))[:, None]
     weighted_matrix = play_record_matrix.multiply(np.sqrt(user_iuf))
     cocurrence_matrix = weighted_matrix.T @ weighted_matrix
     similarity_matrix = (
-        cocurrence_matrix.multiply(item_count_vector)
-        .multiply(item_count_vector.reshape(-1, 1))
+        cocurrence_matrix.multiply(item_norm_vector)
+        .multiply(item_norm_vector.reshape(-1, 1))
     )
     similarity_matrix.setdiag(0)
     similarity_matrix = similarity_matrix.tocsr()
