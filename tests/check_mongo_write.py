@@ -13,6 +13,7 @@ from bson import ObjectId
 from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
+from pymongo.results import BulkWriteResult
 
 from majfeed.itemcf import load_like_pairs, load_pairs, save_neighbors
 from majfeed.publication import cleanup_old_versions, make_model_version
@@ -179,13 +180,31 @@ class MongoWriteChecks(unittest.TestCase):
         )["_id"], V1)
         self.assertIsNotNone(self.db.ChartNeighbors.find_one({"_id": f"{V1}|old"}))
 
-    def test_readback_validation_failure_does_not_publish_or_clean_up(self):
+    def test_incomplete_write_receipt_does_not_publish_or_clean_up(self):
         save_neighbors(self.uri, self.database_name, {"old": []}, V1)
-        with patch("majfeed.publication._validate_release", side_effect=ValueError("verification failed")):
-            with self.assertRaisesRegex(ValueError, "verification failed"):
+        with patch.object(Collection, "bulk_write", return_value=BulkWriteResult({"nInserted": 0}, True)):
+            with self.assertRaisesRegex(RuntimeError, "Incomplete neighbor batch"):
                 save_neighbors(self.uri, self.database_name, {"new": []}, V2)
         self.assertIsNone(self.db.RecommendationModels.find_one({"_id": V2})["PublishedAt"])
         self.assertIsNotNone(self.db.ChartNeighbors.find_one({"_id": f"{V1}|old"}))
+
+    def test_unacknowledged_write_does_not_publish(self):
+        with patch.object(Collection, "bulk_write", return_value=BulkWriteResult({}, False)):
+            with self.assertRaisesRegex(RuntimeError, "Incomplete neighbor batch"):
+                save_neighbors(self.uri, self.database_name, {"new": []}, V1)
+        self.assertIsNone(self.db.RecommendationModels.find_one({"_id": V1})["PublishedAt"])
+
+    def test_successful_publication_does_not_read_back_neighbor_documents(self):
+        original_find = Collection.find
+
+        def reject_neighbor_read(collection, *args, **kwargs):
+            if collection.name == "ChartNeighbors":
+                raise AssertionError("Publication must not read back neighbor documents")
+            return original_find(collection, *args, **kwargs)
+
+        with patch.object(Collection, "find", new=reject_neighbor_read):
+            self.assertEqual(save_neighbors(self.uri, self.database_name, {"source": []}, V1), 1)
+        self.assertIsNotNone(self.db.RecommendationModels.find_one({"_id": V1})["PublishedAt"])
 
     def test_cleanup_preserves_two_latest_releases_and_waits_since_supersession(self):
         now = datetime.now(timezone.utc)

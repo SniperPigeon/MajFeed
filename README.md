@@ -33,8 +33,8 @@ S_{ij}
 发布流程在 `src/majfeed/publication.py`：
 
 1. 在 `RecommendationModels` 插入版本占位：`_id`、`Model`、`GeneratedAt`、`ChartCount` 和空 `PublishedAt`。
-2. 每批 500 条插入近邻；回读整版，逐条验证内容和总数。
-3. 校验成功后原子设置 `PublishedAt`。mmfcapi 只在当前模型已发布记录中排序选最新版，一次推荐固定一个版本。
+2. 写入前检查 Hash、分数及重复项；每批 500 条插入近邻，要求 `majority` 确认，检查每批 `acknowledged` 和 `inserted_count`，最终核对累计插入数。无需全量回读或额外统计查询。
+3. 全部写入确认及数量核对成功后原子设置 `PublishedAt`。mmfcapi 只在当前模型已发布记录中排序选最新版，一次推荐固定一个版本。
 
 写入/验证失败不会发布，也不会触碰旧版。失败占位保留供排查，重跑使用新版本号；
 只有确认原写入进程已停止后才可手动清理该失败版本。空训练结果不发布新版本。

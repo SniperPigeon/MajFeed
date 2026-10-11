@@ -1,6 +1,5 @@
 """Versioned ItemCF publishing. A release is readable only after PublishedAt is set."""
 
-from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import math
 import re
@@ -36,7 +35,7 @@ def _parse_version(version: str) -> tuple[str, datetime]:
     return model, generated_at
 
 
-def _document(chart_hash: str, neighbors: list["Neighbor"], version: str, generated_at: datetime) -> dict:
+def _validate_neighbors(chart_hash: str, neighbors: list["Neighbor"]) -> None:
     if not isinstance(chart_hash, str) or not chart_hash.strip():
         raise ValueError("Source chart hash must not be blank")
     seen = set()
@@ -48,6 +47,9 @@ def _document(chart_hash: str, neighbors: list["Neighbor"], version: str, genera
         if not math.isfinite(score) or score <= 0:
             raise ValueError(f"Invalid neighbor score for {chart_hash!r}")
         seen.add(target)
+
+
+def _document(chart_hash: str, neighbors: list["Neighbor"], version: str, generated_at: datetime) -> dict:
     return {
         "_id": f"{version}|{chart_hash}",
         "ChartHash": chart_hash,
@@ -58,19 +60,6 @@ def _document(chart_hash: str, neighbors: list["Neighbor"], version: str, genera
             for neighbor in sorted(neighbors, key=lambda item: (-item["score"], item["hash"]))
         ],
     }
-
-
-def _validate_release(collection, topks: Mapping[str, list["Neighbor"]], version: str, generated_at: datetime) -> None:
-    """回读完整版本，逐文档核对内容及总数，防止部分写入被发布。"""
-    checked = 0
-    with collection.find({"ModelVersion": version}) as cursor:
-        for document in cursor:
-            chart_hash = document.get("ChartHash")
-            if chart_hash not in topks or document != _document(chart_hash, topks[chart_hash], version, generated_at):
-                raise ValueError(f"Model verification failed for version {version!r}, chart {chart_hash!r}")
-            checked += 1
-    if checked != len(topks):
-        raise ValueError(f"Model verification failed: expected {len(topks)} charts, found {checked}")
 
 
 def cleanup_old_versions(database, model: str, *, now: datetime | None = None) -> int:
@@ -95,14 +84,14 @@ def cleanup_old_versions(database, model: str, *, now: datetime | None = None) -
 
 
 def save_neighbors(uri: str, database_name: str, topks: dict[str, list["Neighbor"]], model_version: str) -> int:
-    """占用新版本 → 分批插入 → 全量回读验证 → 原子发布。"""
+    """占用新版本 → 分批插入并核对写入回执 → 原子发布。"""
     model, generated_at = _parse_version(model_version)
     # 空训练结果维持原有行为，不替换当前可用模型。
     if not topks:
         return 0
     # 写入前检查全部输入；避免明显的格式错误留下半批文档。
     for chart_hash, neighbors in topks.items():
-        _document(chart_hash, neighbors, model_version, generated_at)
+        _validate_neighbors(chart_hash, neighbors)
 
     with MongoClient(uri, uuidRepresentation="standard", tz_aware=True) as client:
         database = client.get_database(database_name, write_concern=WriteConcern(w="majority"))
@@ -120,19 +109,24 @@ def save_neighbors(uri: str, database_name: str, topks: dict[str, list["Neighbor
         })
 
         operations = []
+        written = 0
         for chart_hash, neighbors in topks.items():
             operations.append(InsertOne(_document(chart_hash, neighbors, model_version, generated_at)))
             if len(operations) == BATCH_SIZE:
                 result = collection.bulk_write(operations, ordered=False)
-                if result.inserted_count != len(operations):
+                if not result.acknowledged or result.inserted_count != len(operations):
                     raise RuntimeError("Incomplete neighbor batch")
+                written += result.inserted_count
                 operations.clear()
         if operations:
             result = collection.bulk_write(operations, ordered=False)
-            if result.inserted_count != len(operations):
+            if not result.acknowledged or result.inserted_count != len(operations):
                 raise RuntimeError("Incomplete neighbor batch")
+            written += result.inserted_count
 
-        _validate_release(collection, topks, model_version, generated_at)
+        # 仅累加服务器确认的插入数；异常或短写会阻止发布，无需读回全部近邻。
+        if written != len(topks):
+            raise RuntimeError(f"Incomplete model: expected {len(topks)} charts, inserted {written}")
         published = models.update_one(
             {"_id": model_version, "PublishedAt": None},
             {"$set": {"PublishedAt": datetime.now(timezone.utc)}},
@@ -140,4 +134,4 @@ def save_neighbors(uri: str, database_name: str, topks: dict[str, list["Neighbor
         if published.modified_count != 1:
             raise RuntimeError("Could not publish model version")
         # 写入/校验失败时不会走到这里；保留未发布记录，重跑需使用新版本号。
-    return len(topks)
+    return written
