@@ -3,7 +3,6 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from statistics import mean
-from uuid import UUID
 
 from .itemcf import InteractionPair, Neighbor, build_itemcf, load_pairs
 
@@ -11,17 +10,17 @@ from .itemcf import InteractionPair, Neighbor, build_itemcf, load_pairs
 def evaluate_recall(
     train_pairs: list[InteractionPair],
     validation_pairs: list[InteractionPair],
-    topks: dict[UUID, list[Neighbor]],
+    topks: dict[str, list[Neighbor]],
     k: int = 20,
 ) -> dict:
     """评估老用户发现训练期已出现谱面的用户平均 Recall@K。"""
     train_by_user = defaultdict(set)
     validation_by_user = defaultdict(set)
     for pair in train_pairs:
-        train_by_user[pair["userId"]].add(pair["chartId"])
+        train_by_user[pair["userId"]].add(pair["chartHash"])
     for pair in validation_pairs:
-        validation_by_user[pair["userId"]].add(pair["chartId"])
-    train_items = {pair["chartId"] for pair in train_pairs}
+        validation_by_user[pair["userId"]].add(pair["chartHash"])
+    train_items = {pair["chartHash"] for pair in train_pairs}
 
     recalls = []
     hits = target_pairs = repeat_pairs = cold_users = cold_user_pairs = cold_item_pairs = 0
@@ -45,9 +44,9 @@ def evaluate_recall(
         scores = defaultdict(float)
         for chart in sorted(history):
             for neighbor in topks[chart]:
-                if neighbor["guid"] not in history:
-                    scores[neighbor["guid"]] += neighbor["score"]
-        ranked = sorted(scores, key=lambda chart: (-scores[chart], chart.int))[:k]
+                if neighbor["hash"] not in history:
+                    scores[neighbor["hash"]] += neighbor["score"]
+        ranked = sorted(scores, key=lambda chart: (-scores[chart], chart))[:k]
         user_hits = len(set(ranked) & targets)
         # 先算每个用户的召回率，再求平均；不要用总命中数除以总目标数代替。
         recalls.append(user_hits / len(targets))

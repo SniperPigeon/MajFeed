@@ -1,5 +1,4 @@
 import unittest
-from uuid import UUID
 
 from bson import ObjectId
 
@@ -23,7 +22,7 @@ PYTHONPATH=src uv run --locked python -m majfeed.evaluate \
 `mongodb://127.0.0.1:27018/MajNetDb_local`，可用 `--mongo-uri` 和 `--database` 修改。
 
 对每个有训练历史的验证用户，累加其历史谱面邻居的相似度，排除已经玩过的谱面，
-按分数取前 K 项；同分时按谱面 UUID 排序。没有候选命中时记零，不补热门或随机结果。
+按分数取前 K 项；同分时按谱面 Hash 排序。没有候选命中时记零，不补热门或随机结果。
 验证目标为该用户在验证期首次接触、且训练期其他用户已经接触过的谱面。
 `recall_at_k` 是每个可评估用户的 `命中数 / 目标数` 的算术平均。
 
@@ -35,11 +34,11 @@ PYTHONPATH=src uv run --locked python -m majfeed.evaluate \
 
 class RecallTests(unittest.TestCase):
     def setUp(self):
-        self.a, self.b, self.c, self.d = [UUID(int=i) for i in range(1, 5)]
+        self.a, self.b, self.c, self.d = ["hash-a", "hash-b", "hash-c", "hash-d"]
 
     def pairs(self, *entries):
         return [
-            {"userId": ObjectId(f"{user:024x}"), "chartId": chart, "weight": 1.0}
+            {"userId": ObjectId(f"{user:024x}"), "chartHash": chart, "weight": 1.0}
             for user, chart in entries
         ]
 
@@ -48,8 +47,8 @@ class RecallTests(unittest.TestCase):
         train = self.pairs((1, a), (2, b), (3, c))
         validation = self.pairs((1, a), (1, b), (1, c), (1, d), (4, b), (2, c), (3, c))
         topks = {
-            a: [{"guid": b, "score": 0.9}, {"guid": c, "score": 0.1}],
-            b: [{"guid": c, "score": 0.9}],
+            a: [{"hash": b, "score": 0.9}, {"hash": c, "score": 0.1}],
+            b: [{"hash": c, "score": 0.9}],
             c: [],
         }
         result = evaluate_recall(train, validation, topks, k=1)
@@ -69,11 +68,11 @@ class RecallTests(unittest.TestCase):
         validation = self.pairs((1, c))
         topks = {
             a: [
-                {"guid": b, "score": 0.9},
-                {"guid": d, "score": 0.6},
-                {"guid": c, "score": 0.4},
+                {"hash": b, "score": 0.9},
+                {"hash": d, "score": 0.6},
+                {"hash": c, "score": 0.4},
             ],
-            b: [{"guid": c, "score": 0.4}],
+            b: [{"hash": c, "score": 0.4}],
             c: [],
             d: [],
         }

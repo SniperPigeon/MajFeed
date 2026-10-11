@@ -1,7 +1,6 @@
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TypedDict
-from uuid import UUID
 
 import numpy as np
 from bson import ObjectId
@@ -11,12 +10,12 @@ from scipy.sparse import coo_array
 
 class InteractionPair(TypedDict):
     userId: ObjectId
-    chartId: UUID
+    chartHash: str
     weight: float
 
 
 class Neighbor(TypedDict):
-    guid: UUID
+    hash: str
     score: float
 
 
@@ -55,7 +54,7 @@ def load_pairs(
             "$group": {
                 "_id": {
                     "userId": "$PlayerId",
-                    "chartId": "$chart._id",
+                    "chartHash": "$chart.Hash",
                 }
             }
         },
@@ -63,7 +62,7 @@ def load_pairs(
             "$project": {
                 "_id": 0,
                 "userId": "$_id.userId",
-                "chartId": "$_id.chartId",
+                "chartHash": "$_id.chartHash",
                 "weight": {"$literal": 1.0},  # 用 $literal 返回常量，而不是保留同名字段。
             }
         },
@@ -102,7 +101,7 @@ def load_like_pairs(uri: str, database_name: str) -> list[InteractionPair]:
             "$group": {
                 "_id": {
                     "userId": "$Likes",
-                    "chartId": "$chart._id",
+                    "chartHash": "$chart.Hash",
                 }
             }
         },
@@ -110,7 +109,7 @@ def load_like_pairs(uri: str, database_name: str) -> list[InteractionPair]:
             "$project": {
                 "_id": 0,
                 "userId": "$_id.userId",
-                "chartId": "$_id.chartId",
+                "chartHash": "$_id.chartHash",
                 "weight": {"$literal": 1.5},
             }
         },
@@ -123,9 +122,9 @@ def load_like_pairs(uri: str, database_name: str) -> list[InteractionPair]:
 
 def build_itemcf(
     pairs: Iterable[InteractionPair], k: int = 100
-) -> dict[UUID, list[Neighbor]]:
-    """计算带交互权重的 IUF ItemCF，按谱面返回 Top-K 的 guid/score 列表。"""
-    # UUID/ObjectId 映射到连续整数索引：用户对应行，谱面对应列。
+) -> dict[str, list[Neighbor]]:
+    """计算带交互权重的 IUF ItemCF，按谱面返回 Top-K 的 hash/score 列表。"""
+    # Hash/ObjectId 映射到连续整数索引：用户对应行，谱面对应列。
     user_to_idx = {}
     chart_to_idx = {}
     rows = []
@@ -133,13 +132,13 @@ def build_itemcf(
     vals = []
     for record in pairs:
         user_id = record["userId"]
-        chart_id = record["chartId"]
+        chart_hash = record["chartHash"]
         if user_id not in user_to_idx:
             user_to_idx[user_id] = len(user_to_idx)
-        if chart_id not in chart_to_idx:
-            chart_to_idx[chart_id] = len(chart_to_idx)
+        if chart_hash not in chart_to_idx:
+            chart_to_idx[chart_hash] = len(chart_to_idx)
         rows.append(user_to_idx[user_id])
-        cols.append(chart_to_idx[chart_id])
+        cols.append(chart_to_idx[chart_hash])
         vals.append(record["weight"])
 
     # COO 转 CSR 时会合并重复坐标，游玩 1.0 加点赞 1.5 就得到权重 2.5。
@@ -179,10 +178,10 @@ def build_itemcf(
         neighbor_indices = similarity_matrix.indices[start:end]
         neighbor_scores = similarity_matrix.data[start:end]
         positions = np.argsort(neighbor_scores)[::-1][:k]
-        # positions 是邻居数组内的位置，还需经过列索引映射回谱面 UUID。
+        # positions 是邻居数组内的位置，还需经过列索引映射回谱面 Hash。
         topks[idx_to_chart[i]] = [
             {
-                "guid": idx_to_chart[int(neighbor_indices[pos])],
+                "hash": idx_to_chart[int(neighbor_indices[pos])],
                 "score": float(neighbor_scores[pos]),
             }
             for pos in positions
@@ -193,7 +192,7 @@ def build_itemcf(
 def save_neighbors(
     uri: str,
     database_name: str,
-    topks: dict[UUID, list[Neighbor]],
+    topks: dict[str, list[Neighbor]],
     model_version: str,
 ) -> int:
     """按 C# ChartNeighborList 的结构更新 ChartNeighbors，返回写入谱面数。"""
@@ -202,19 +201,19 @@ def save_neighbors(
     written = 0
     with MongoClient(uri, uuidRepresentation="standard", tz_aware=True) as client:
         collection = client[database_name]["ChartNeighbors"]
-        for chart_id, neighbors in topks.items():
-            # _id 复用原谱面 UUID；字段大小写和 UUID Standard 格式与 C# 模型一致。
+        for chart_hash, neighbors in topks.items():
+            # _id 保存源谱面 Hash，邻居同样保存 Hash；字段大小写与 C# 模型一致。
             document = {
-                "_id": chart_id,
+                "_id": chart_hash,
                 "ModelVersion": model_version,
                 "GeneratedAt": generated_at,
                 "Neighbors": [
-                    {"ChartId": neighbor["guid"], "Score": float(neighbor["score"])}
+                    {"ChartHash": neighbor["hash"], "Score": float(neighbor["score"])}
                     for neighbor in sorted(neighbors, key=lambda item: item["score"], reverse=True)
                 ],
             }
             # 同一谱面直接替换当前近邻列表，不存在时插入；本轮所有文档共用生成时间。
-            operations.append(ReplaceOne({"_id": chart_id}, document, upsert=True))
+            operations.append(ReplaceOne({"_id": chart_hash}, document, upsert=True))
             if len(operations) == 500:
                 collection.bulk_write(operations, ordered=False)
                 written += len(operations)

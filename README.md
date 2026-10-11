@@ -15,6 +15,22 @@ S_{ij}
 {\sqrt{\sum_u R_{ui}^{2}}\sqrt{\sum_u R_{uj}^{2}}}
 \]
 
+## 谱面标识与回写
+
+训练、评估和近邻回写统一使用 `MaiCharts.Hash`，区分大小写。游玩仍从
+`Scores.Hash` / `PlayHistory.Hash` 读取，点赞从 `ChartInteracts.ChartHash` 读取；
+仅保留能关联到当前谱面的交互，并按用户与 Hash 去重。
+输入为 `userId/chartHash/weight`，Top-K 返回 `dict[str, list[{"hash": str, "score": float}]]`。
+IUF、交互权重和归一化公式保持不变。
+
+`ChartNeighbors` 以源谱面的 Hash 字符串作为 `_id`，内嵌
+`Neighbors[{ChartHash, Score}]`，另外保留 `ModelVersion` 和 UTC `GeneratedAt`。
+同 Hash 的谱面更换 UUID 后，后端按 Hash 读取近邻并解析当前的谱面对象。
+
+旧的 UUID 文档不会被新版后端读取。部署时先运行新版 majfeed 生成 Hash 文档，
+再部署匹配的 mmfcapi；无需先删除旧文档，也不会自动修改历史成绩。
+Hash 本身变化的谱面仍按新标识处理。
+
 ## 主入口
 
 在项目根目录准备 `.env` 后运行
