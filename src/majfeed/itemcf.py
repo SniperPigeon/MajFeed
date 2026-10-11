@@ -1,11 +1,13 @@
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TypedDict
 
 import numpy as np
 from bson import ObjectId
-from pymongo import MongoClient, ReplaceOne
+from pymongo import MongoClient
 from scipy.sparse import coo_array
+
+from .publication import save_neighbors
 
 
 class InteractionPair(TypedDict):
@@ -148,7 +150,7 @@ def build_itemcf(
     ).tocsr()
     idx_to_chart = {v: key for key, v in chart_to_idx.items()}
 
-    # IUF 按用户接触过的不同谱面数量计算，不能把交互权重的行和当成数量。
+    # IUF 按用户接触过的不同谱面数量计算
     user_counts = play_record_matrix.count_nonzero(axis=1).astype(np.float32)
     # 分母使用原始权重列的 L2 范数；全为 1 时，等价于谱面用户数的平方根。
     item_square_sums = (
@@ -165,7 +167,7 @@ def build_itemcf(
         cocurrence_matrix.multiply(item_norm_vector)
         .multiply(item_norm_vector.reshape(-1, 1))
     )
-    similarity_matrix.setdiag(0)  # 清除自身相似度，不把谱面自己作为推荐。
+    similarity_matrix.setdiag(0)  # 清除自身相似度
     similarity_matrix = similarity_matrix.tocsr()
     similarity_matrix.eliminate_zeros()  # 删除 setdiag 留下的显式零。
 
@@ -187,40 +189,3 @@ def build_itemcf(
             for pos in positions
         ]
     return topks
-
-
-def save_neighbors(
-    uri: str,
-    database_name: str,
-    topks: dict[str, list[Neighbor]],
-    model_version: str,
-) -> int:
-    """按 C# ChartNeighborList 的结构更新 ChartNeighbors，返回写入谱面数。"""
-    generated_at = datetime.now(timezone.utc)
-    operations = []
-    written = 0
-    with MongoClient(uri, uuidRepresentation="standard", tz_aware=True) as client:
-        collection = client[database_name]["ChartNeighbors"]
-        for chart_hash, neighbors in topks.items():
-            # _id 保存源谱面 Hash，邻居同样保存 Hash；字段大小写与 C# 模型一致。
-            document = {
-                "_id": chart_hash,
-                "ModelVersion": model_version,
-                "GeneratedAt": generated_at,
-                "Neighbors": [
-                    {"ChartHash": neighbor["hash"], "Score": float(neighbor["score"])}
-                    for neighbor in sorted(neighbors, key=lambda item: item["score"], reverse=True)
-                ],
-            }
-            # 同一谱面直接替换当前近邻列表，不存在时插入；本轮所有文档共用生成时间。
-            operations.append(ReplaceOne({"_id": chart_hash}, document, upsert=True))
-            if len(operations) == 500:
-                collection.bulk_write(operations, ordered=False)
-                written += len(operations)
-                operations.clear()
-
-        # 写入最后不足一批的结果，空结果不会发出写入操作。
-        if operations:
-            collection.bulk_write(operations, ordered=False)
-            written += len(operations)
-    return written
