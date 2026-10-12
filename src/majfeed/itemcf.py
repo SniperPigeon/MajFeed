@@ -5,8 +5,8 @@ from typing import TypedDict
 import numpy as np
 from bson import ObjectId
 from pymongo import MongoClient
-from scipy.sparse import coo_array
-
+from scipy.sparse import coo_matrix
+from sparse_dot_topn import sp_matmul_topn
 from .publication import save_neighbors
 
 
@@ -145,7 +145,7 @@ def build_itemcf(
 
     # COO 转 CSR 时会合并重复坐标，游玩 1.0 加点赞 1.5 就得到权重 2.5。
     vals = np.asarray(vals, dtype=np.float32)
-    play_record_matrix = coo_array(
+    play_record_matrix = coo_matrix( #sparse dot topn 需要 csr_matrix
         (vals, (rows, cols)), shape=(len(user_to_idx), len(chart_to_idx))
     ).tocsr()
     idx_to_chart = {v: key for key, v in chart_to_idx.items()}
@@ -154,38 +154,34 @@ def build_itemcf(
     user_counts = play_record_matrix.count_nonzero(axis=1).astype(np.float32)
     # 分母使用原始权重列的 L2 范数；全为 1 时，等价于谱面用户数的平方根。
     item_square_sums = (
-        play_record_matrix.multiply(play_record_matrix).sum(axis=0).flatten()
+        np.asarray(play_record_matrix.multiply(play_record_matrix).sum(axis=0)).ravel() # 换matrix后的求和
     )
     item_norm_vector = 1 / np.sqrt(item_square_sums)
     # 转为 (用户数, 1) 的列向量，让每个用户的 IUF 权重广播到其整行。
-    user_iuf = (1.0 / np.log1p(user_counts))[:, None]
+    user_iuf = (1.0 / np.log1p(user_counts))[:, None].astype(np.float32)
     # 两侧先乘 sqrt(IUF)，转置相乘后，共同用户的贡献恰好乘一次 IUF。
-    weighted_matrix = play_record_matrix.multiply(np.sqrt(user_iuf))
-    cocurrence_matrix = weighted_matrix.T @ weighted_matrix
-    # 分别按列、按行乘范数的倒数，相当于除以两张谱面各自的范数。
-    similarity_matrix = (
-        cocurrence_matrix.multiply(item_norm_vector)
-        .multiply(item_norm_vector.reshape(-1, 1))
-    )
+    
+    # 换用 sparse_dot_topn 计算 Top-K，的主部分
+    # 为了topk正常，先把norm也乘进去
+    weighted_matrix = play_record_matrix.multiply(np.sqrt(user_iuf)) \
+        .multiply(item_norm_vector).astype(np.float32).tocsr()
+    similarity_matrix = sp_matmul_topn(weighted_matrix.T.tocsr(), weighted_matrix, top_n=k+1, sort=True).tocsr() #还有自身在里面，k+1
+
     similarity_matrix.setdiag(0)  # 清除自身相似度
-    similarity_matrix = similarity_matrix.tocsr()
     similarity_matrix.eliminate_zeros()  # 删除 setdiag 留下的显式零。
 
-    # 每行对应一张谱面，从非零邻居中按相似度降序选 Top-K。
     topks = {}
-    for i in range(similarity_matrix.shape[0]):
+    for i in range(similarity_matrix.shape[0]): # type:ignore
         # indptr 给出该行在 indices/data 两个一维数组中的起止位置。
         start = similarity_matrix.indptr[i]
         end = similarity_matrix.indptr[i + 1]
         neighbor_indices = similarity_matrix.indices[start:end]
         neighbor_scores = similarity_matrix.data[start:end]
-        positions = np.argsort(neighbor_scores)[::-1][:k]
-        # positions 是邻居数组内的位置，还需经过列索引映射回谱面 Hash。
         topks[idx_to_chart[i]] = [
             {
-                "hash": idx_to_chart[int(neighbor_indices[pos])],
-                "score": float(neighbor_scores[pos]),
+                "hash": idx_to_chart[int(neighbor_indices[idx])],
+                "score": float(neighbor_scores[idx]),
             }
-            for pos in positions
+            for idx in range(min(k,len(neighbor_indices)))
         ]
     return topks
