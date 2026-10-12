@@ -67,7 +67,7 @@ jobs:
           uses: docker/build-push-action@v7
           with:
             platforms: linux/amd64
-            push: env.SHOULD_PUSH == 'true'
+            push: ${{ env.SHOULD_PUSH }}
             tags: ${{ steps.meta.outputs.tags }}
             labels: ${{ steps.meta.outputs.labels }}
             cache-from: type=gha
