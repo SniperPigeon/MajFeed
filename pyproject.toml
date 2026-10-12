@@ -8,4 +8,5 @@ dependencies = [
     "numpy>=2.4.6",
     "pymongo>=4.18.2",
     "scipy>=1.17.1",
+    "sparse-dot-topn>=1.2.0",
 ]
