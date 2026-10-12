@@ -14,8 +14,11 @@ jobs:
         steps:
             - uses: actions/checkout@v7
 
-            - uses: astral-sh/setup-uv@v10       # 2. 装好 uv
+            - name: Install uv
+              uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
               with:
+                # Install a specific version of uv.
+                version: "0.13.0"
                 enable-cache: true             #    缓存 uv 下载的包，第二次跑更快
             
             - name: run_unittest
