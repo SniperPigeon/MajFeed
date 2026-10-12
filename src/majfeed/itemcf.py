@@ -170,6 +170,7 @@ def build_itemcf(
     similarity_matrix.setdiag(0)  # 清除自身相似度
     similarity_matrix.eliminate_zeros()  # 删除 setdiag 留下的显式零。
 
+    # TODO 这里全量返回在优化后变成了最吃内存的，可以直接丢回稀疏矩阵让上层处理分块组装写入。
     topks = {}
     for i in range(similarity_matrix.shape[0]): # type:ignore
         # indptr 给出该行在 indices/data 两个一维数组中的起止位置。
