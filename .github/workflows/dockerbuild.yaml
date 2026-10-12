@@ -1,0 +1,26 @@
+name: dockerbuild
+
+on: 
+    push:
+        branches: [main]
+        tags: ['v*.*.*']
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
+
+jobs:
+    unittest:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: astral-sh/setup-uv@v10       # 2. 装好 uv
+              with:
+                enable-cache: true             #    缓存 uv 下载的包，第二次跑更快
+            
+            - name: run_unittest
+              run: uv run --locked python -m unittest discover -s tests -v
+              env:
+                PYTHONPATH: src
+                    
+
