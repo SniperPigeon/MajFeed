@@ -8,14 +8,50 @@
 
 分母类似普通ItemCF，不过由于我们引入权重，这里靠`sigma sqrt(R^2)`作为Normalization范数。公式：
 
-使用了`sparse_dot_topn`库在计算过程中就截断topn，减少一下在服务器上的内存占用
-
 \[
 S_{ij}
 =
 \frac{\sum_u IUF_u\,R_{ui}R_{uj}}
 {\sqrt{\sum_u R_{ui}^{2}}\sqrt{\sum_u R_{uj}^{2}}}
 \]
+
+使用了`sparse_dot_topn`库在计算过程中就截断topn，减少一下在服务器上的内存占用
+
+## 主入口
+
+### 开发环境
+在项目根目录准备 `.env` 后运行：
+
+```bash
+cp .env.example .env
+uv run --locked --env-file .env python src/main.py
+```
+
+### 远程Docker
+
+main直接负责所有步骤，一次性完成退出。
+
+- 本轮完整发布成功后执行旧版本回收。
+- 保留版本号最大的两版。
+- 更旧版本自首次被更高版本取代满一小时后，才删除其近邻及发布记录。
+
+```bash
+docker run --rm --platform linux/amd64 \
+  -e MONGO_URI='mongodb://<user>:<password>@<host>:<port>/?authSource=admin' \
+  -e MONGO_DATABASE='<db name>' \
+  sniperpigeon/majfeed:<version>
+```
+
+`MONGO_URI` 的 `<host>:<port>` 是**从容器内部**看到的地址，容器里的 `127.0.0.1` 指向容器自己：
+
+- Mongo 在同一个 Docker 网络（如 compose 服务名 `mongo`）：加 `--network <网络名>`，写 `mongo:27017`。
+- Mongo 跑在宿主机或映射到宿主机端口：写 `host.docker.internal:<映射端口>`；Linux 上需要再加 `--add-host=host.docker.internal:host-gateway`。
+- 密码里有 `@ : / ? #` 等字符时需 URL 编码（如 `@` → `%40`）；用户建在业务库而非 `admin` 时，`authSource` 改为对应库名。
+
+`MONGO_URI`、`MONGO_DATABASE` 必填，`TOP_K` 默认 100，不需要动。
+成功后输出 JSON，包含本轮自动生成的 `model_version`、训练交互数、写入谱面数及 `deleted_versions`。
+首次上线时先跑一次 majfeed，确认 `RecommendationModels` 里有 `PublishedAt` 非空的版本，再部署 mmfcapi。
+
 
 ## 谱面标识与版本更新
 
@@ -39,39 +75,8 @@ S_{ij}
 写入失败的情况下不会被读取，依然使用旧版本。
 清理由 `src/main.py` 的 `run` 在本轮发布成功后执行，发布失败或空结果不会触发清理。
 
-## 主入口
 
-### 开发环境
-在项目根目录准备 `.env` 后运行：
-
-```bash
-cp .env.example .env
-uv run --locked --env-file .env python src/main.py
-```
-
-### 远程Docker
-
-main直接负责所有步骤，一次性完成退出。
-
-- 本轮完整发布成功后执行旧版本回收。
-- 保留版本号最大的两版。
-- 更旧版本自首次被更高版本取代满一小时后，才删除其近邻及发布记录。
-
-```bash
-docker run --rm --platform linux/amd64 \
-  -e MONGO_URI= <mongo connection string, including username and password> \
-  -e MONGO_DATABASE= <Actual DB name> \
-  sniperpigeon/majfeed:<version>
-```
-
-`MONGO_URI`、`MONGO_DATABASE` 必填，`TOP_K` 默认 100，不需要动。
-成功后输出 JSON，包含本轮自动生成的 `model_version`、训练交互数、写入谱面数及 `deleted_versions`。
-
-
-## 本地迁移测试
-
-先运行新版 majfeed，确认出现 `PublishedAt` 非空的版本，再部署匹配的 mmfcapi。
-旧的 `_id = Hash` / UUID 数据不会被新版读取或自动清理，确认迁移稳定后可单独处理。
+## 测试
 
 ```bash
 PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
