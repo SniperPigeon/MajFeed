@@ -55,21 +55,46 @@ docker run --rm --platform linux/amd64 \
 
 ## 谱面标识与版本更新
 
-训练、评估和近邻回写统一使用 `MaiCharts.Hash`，区分大小写。游玩从
-`Scores.Hash` / `PlayHistory.Hash` 读取，点赞从 `ChartInteracts.ChartHash` 读取；
-仅保留能关联到当前谱面的交互，并按用户与 Hash 去重。
-输入为 `userId/chartHash/weight`，Top-K 返回 `dict[str, list[{"hash": str, "score": float}]]`。
+训练、评估和近邻回写统一使用谱面 Id（`MaiCharts._id`，UUID）。读取的是 mmfcapi
+`scripts/MigrateLegacyData.cs` 迁移后的数据（TeamMajdata/mmfcapi#44），交互不再带 maidata MD5，
+都直接按谱面 Id 关联现存谱面：
 
-每轮开始自动生成 `{model}-yyyyMMdd:HHmmss`（UTC），例如 `itemcf-20261012:000001`作为可排序的版本号，方便快速定位新版。
+- 训练的游玩从 `Scores` 读取。每位玩家每个难度（`LevelHash`）一条最佳成绩，`ChartId` 是该成绩
+  最近一次提交时游玩的谱面，`Timestamp` 是那次提交的时间；多张谱面共用同一 level hash 时以 `ChartId` 为准。
+- 评估的游玩从 `PlayHistory` 读取，每次游玩一条，使用其 `ChartId`。
+- 点赞从 `ChartVotes` 中 `Kind = 1`（upvote）的 `ChartId` / `UserId` 读取，点踩不参与训练。
+  旧版后端内嵌在 `ChartInteracts.Likes` 的点赞由迁移脚本搬进 `ChartVotes`，不再单独读取。
 
-`ChartNeighbors` 文档包含 `_id = ModelVersion + "|" + ChartHash`、
-`ChartHash`、`ModelVersion`、UTC `GeneratedAt` 和 `Neighbors[{ChartHash, Score}]`。
-同 Hash 更换 UUID 不影响关联。新旧版本同时存在，已发布版本不可修改。
+仅保留能关联到现存谱面的交互，点赞还要求账号仍存在，并按用户与谱面 Id 去重。
+在迁移前的数据库上运行会读不到游玩和点赞，应先完成 mmfcapi 的迁移再部署本版。
+输入为 `userId/chartId/weight`，Top-K 返回 `dict[UUID, list[{"chartId": UUID, "score": float}]]`。
+
+每轮开始自动生成 `{model}-yyyyMMdd:HHmmss`（UTC），例如 `itemcf-id-20261012:000001`作为可排序的版本号，方便快速定位新版。
+
+`ChartNeighbors` 文档包含 `_id = ModelVersion + "|" + ChartId`、
+`ChartId`、`ModelVersion`、UTC `GeneratedAt` 和 `Neighbors[{ChartId, Score}]`：
+
+- `_id` 里的 ChartId 是小写、带连字符的 36 位文本，与 .NET `Guid.ToString()` 一致。
+- `ChartId` 字段写成 BSON UUID（binary subtype 4），与 `MaiChart._id` 相同；mmfcapi 读取时要用 `GuidRepresentation.Standard`。
+
+删除后重新上传同一份谱面会得到新 Id：旧谱面 Id 下的成绩、游玩记录和点赞不再关联，成绩要等玩家在新谱面上
+再次提交才会计入。下一轮训练按新 Id 生成近邻；已发布版本里的旧 Id 不再对应任何谱面。新旧版本同时存在，已发布版本不可修改。
+
+### 从按 Hash 的 `itemcf` 迁移
+
+按 ChartId 写入的模型名是 `itemcf-id`（`src/main.py` 的 `MODEL_NAME`），与按 Hash 写入的旧模型
+`itemcf` 互不可读，所以换了模型名而不是覆盖：
+
+1. 部署本版 majfeed，跑一轮，确认 `RecommendationModels` 里有 `Model = "itemcf-id"` 且 `PublishedAt` 非空的版本。
+   旧后端继续读 `itemcf` 的最后一版，推荐不中断，只是不再更新。
+2. 部署按 ChartId 读近邻、模型名改为 `itemcf-id` 的 mmfcapi。
+3. 稳定后手动删除旧模型的数据（夜间任务只回收 `itemcf-id` 的旧版本）：
+   先取 `RecommendationModels` 中 `Model = "itemcf"` 的全部 `_id`，删除 `ChartNeighbors` 里 `ModelVersion` 属于这些版本的文档，再删除这些发布记录。
 
 更新数据在 `src/majfeed/publication.py`：
 
 1. 在 `RecommendationModels` 插入版本占位：`_id`、`Model`、`GeneratedAt`、`ChartCount` 和空 `PublishedAt`。
-2. 写入前检查 Hash、分数及重复项；每批 500 条插入近邻，要求 `majority` 确认，检查每批 `acknowledged` 和 `inserted_count`，最终核对累计插入数。无需全量回读或额外统计查询。
+2. 写入前检查谱面 Id（必须是 UUID）、分数及重复项；每批 500 条插入近邻，要求 `majority` 确认，检查每批 `acknowledged` 和 `inserted_count`，最终核对累计插入数。无需全量回读或额外统计查询。
 3. 全部写入确认及数量核对成功后原子设置 `PublishedAt`。mmfcapi 只在当前模型已发布记录中排序选最新版，一次推荐固定一个版本。
 
 写入失败的情况下不会被读取，依然使用旧版本。
